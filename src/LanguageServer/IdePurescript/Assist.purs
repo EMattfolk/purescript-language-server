@@ -25,7 +25,7 @@ import Effect.Class (liftEffect)
 import Foreign (F, Foreign, readInt, readString, unsafeFromForeign, unsafeToForeign)
 import Foreign.Index ((!))
 import Foreign.NullOrUndefined (readNullOrUndefined)
-import IdePurescript.Completion (declarationTypeToNamespace, simplifyImportChoice)
+import IdePurescript.Completion (declarationTypeToNamespace, simplifyImportChoice, sortImportChoices)
 import IdePurescript.PscIde (eitherToErr)
 import IdePurescript.PscIdeServer (Notify)
 import IdePurescript.Tokens (containsArrow, identifierAtPoint, startsWithCapitalLetter)
@@ -148,52 +148,63 @@ fixTypoActions ::
   Aff (Array Command)
 fixTypoActions docs _ (ServerState { port, conn, modules }) docUri line char =
   case port, conn of
-    Just port', Just _ -> do
-      doc <- liftEffect $ getDocument docs docUri
-      Nullable.toMaybe doc # maybe (pure []) \doc -> do
-        lineText <- liftEffect $ getTextAtRange doc (lineRange' line char)
-        case identifierAtPoint lineText char of
-          Just { word, qualifier } -> do
-            res <- suggestTypos port' word 2 modules.main
-              defaultCompletionOptions
-            pure
-              $ case res of
-                  Left _ -> []
-                  Right infos ->
-                    infos
-                      # simplifyImportChoice identity
-                      <#>
-                        ( \( TypeInfo
-                               { type', identifier, module', declarationType }
-                           ) ->
-                            Commands.fixTypo'
-                              ( let
-                                  decTypeString = renderDeclarationType type'
-                                    identifier
-                                    declarationType
-                                in
-                                  if identifier == word then
-                                    "Import" <> decTypeString <> identifier
-                                      <> " (" <> module' <> ")"
-                                  else
-                                    "Replace with " <> identifier
-                                      <> " (" <> module' <> ")"
-                              )
-                              docUri
-                              line
-                              char
-                              ( encodeTypoResult $ TypoResult
-                                  { identifier
-                                  , qualifier
-                                  , mod: module'
-                                  , declarationType: maybe ""
-                                      declarationTypeToString
-                                      declarationType
-                                  }
-                              )
-                        )
-                      # take 10
-          Nothing -> pure []
+    Just port', Just _ ->
+      do
+        doc <- liftEffect $ getDocument docs docUri
+        Nullable.toMaybe doc # maybe (pure [])
+          \doc ->
+            do
+              lineText <- liftEffect $ getTextAtRange doc (lineRange' line char)
+              case identifierAtPoint lineText char of
+                Just { word, qualifier } ->
+                  do
+                    res <-
+                      suggestTypos port' word 2 modules.main
+                        defaultCompletionOptions
+                    pure
+                      $ case res of
+                          Left _ -> []
+                          Right infos ->
+                            infos
+                              # simplifyImportChoice identity
+                              # sortImportChoices word qualifier
+                              # take 10
+                              <#>
+                                ( \( TypeInfo
+                                       { type', identifier, module', declarationType }
+                                   ) ->
+                                    Commands.fixTypo'
+                                      ( let
+                                          decTypeString =
+                                            renderDeclarationType type'
+                                              identifier
+                                              declarationType
+                                        in
+                                        if identifier == word then
+                                          "Import" <> decTypeString <> identifier
+                                            <> " ("
+                                            <> module'
+                                            <> ")"
+                                        else
+                                          "Replace with " <> identifier
+                                            <> " ("
+                                            <> module'
+                                            <> ")"
+                                      )
+                                      docUri
+                                      line
+                                      char
+                                      ( encodeTypoResult $ TypoResult
+                                          { identifier
+                                          , qualifier
+                                          , mod: module'
+                                          , declarationType: maybe ""
+                                              declarationTypeToString
+                                              declarationType
+                                          }
+                                      )
+                                )
+                Nothing -> pure []
     _, _ -> pure []
   where
   renderDeclarationType type' identifier = case _ of

@@ -3,15 +3,15 @@ module IdePurescript.Completion where
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (concatMap, filter, foldl, head, intersect, snoc, sortBy, (:))
+import Data.Array (concatMap, filter, foldl, head, intersect, snoc, sortBy, sortWith, (:))
 import Data.Array as Array
 import Data.Either (Either)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, fromMaybe', isJust)
 import Data.Set as Set
-import Data.String (Pattern(..), indexOf, length)
+import Data.String (Pattern(..), contains, indexOf, length, stripSuffix, take)
 import Data.String.Regex (Regex, regex)
-import Data.String.Regex.Flags (noFlags)
+import Data.String.Regex.Flags (global, noFlags)
 import Data.String.Utils (endsWith, startsWith)
 import Data.Traversable (any, traverse)
 import Data.Tuple (Tuple(..))
@@ -345,3 +345,39 @@ simplifyImportChoice f before = foldl go [] before
         == ti2.module'
       && isDataConstructor info2
       && dctorMatchesType ti1.identifier info2
+
+partsRegex :: Either String Regex
+partsRegex =
+  regex
+    ("""[A-Z][a-z]*""")
+    global
+
+sortImportChoices word qualifier =
+  let
+    score (TypeInfo { type', identifier, module', declarationType }) =
+      case qualifier, word == identifier of
+        Just qual, true -> -- Correct name, we need to figure out which module we want.
+          [ \_ -> qual == module' -- Perfect match.
+          , \_ -> module' # stripSuffix (Pattern qual) # isJust -- Module ends with qual
+          , \_ -> module' # contains (Pattern qual) -- Module contains qual
+          ]
+            # Array.findIndex (\f -> f unit)
+            # fromMaybe'
+                ( \_ ->
+                    let
+                      -- Try splitting the qualifier into parts "AbaBab" -> ["A", "B"]
+                      -- and check how many letters are in the module. More is
+                      -- assumed to be better.
+                      l =
+                        qual
+                          # match' partsRegex
+                          # fromMaybe []
+                          <#> fromMaybe "§"
+                          # filter (\part -> module' # contains (Pattern (take 1 part)))
+                          # Array.length
+                    in
+                    9998 - l
+                )
+        _, _ -> 9999 -- Incorrect name, lets just leave it.
+  in
+  sortWith score
